@@ -150,3 +150,15 @@ Paste this into the agent, after saving `SHOPIFY_CLIENT_ID` and `SHOPIFY_CLIENT_
 | API returns 403 / `ACCESS_DENIED` | That scope is missing (see section 4). Add it in the Dev Dashboard and release a new app version. |
 | API returns 429 / `THROTTLED` | Rate limit. Wait a moment and retry. |
 | Network / proxy errors | The platform must allow outbound HTTPS to `eshaa-official.myshopify.com`. |
+| Token request returns 502 `token refresh not allowed through egress proxy` (store homepage still loads) | The platform's sandbox blocks the token endpoint on purpose, so Step A cannot run there. Do not try to get around it. Use the platform's own credential / OAuth page and enter this app's client ID and secret there (if it asks for a redirect URL, add that URL under the app's allowed redirection URLs in the Shopify Dev Dashboard). Or ask the platform's admin to allow `/admin/oauth/access_token` for this store. |
+
+## 9. Platforms with a locked-down network (e.g. muse.ai)
+
+Some agent sandboxes do not let the agent request tokens itself. On those:
+
+1. Save the app's client ID and secret in the platform's **secure credential / OAuth page**, not in chat.
+2. The platform then gets and renews the token for the agent. Section 3 Step A is skipped,
+   and Steps B and C (API calls, retry on 401) still apply.
+3. If the platform asks for a **redirect URL**, add it to the app in the Shopify Dev Dashboard
+   (app → Configuration → Allowed redirection URLs) and release a new app version.
+4. The rules in section 6 still apply.
