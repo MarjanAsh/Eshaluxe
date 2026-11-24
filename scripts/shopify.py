@@ -16,6 +16,14 @@ CLI usage:
   python3 scripts/shopify.py '{ shop { name } }'
   python3 scripts/shopify.py 'query($n:Int!){ products(first:$n){ nodes { title } } }' '{"n":5}'
   python3 scripts/shopify.py --check      # verify connection
+  python3 scripts/shopify.py --scopes     # list the app's granted access scopes
+  python3 scripts/shopify.py -f query.graphql ['{"vars":1}']   # query from a file
+  echo '{ shop { name } }' | python3 scripts/shopify.py -       # query from stdin
+  python3 scripts/shopify.py --rest GET products/count.json     # REST Admin API
+  python3 scripts/shopify.py --write 'mutation { ... }'         # writes need --write
+
+Mutations and non-GET REST calls are refused unless --write is passed, so
+nothing changes in the store by accident (owner approval comes first).
 
 Library usage:
   from shopify import graphql
@@ -100,14 +108,75 @@ def graphql(query, variables=None, _retry=True):
         raise SystemExit(f"Shopify API error {e.code}: {e.read().decode()[:500]}")
 
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
+def rest(method, path, body=None, _retry=True):
+    """Call the REST Admin API, e.g. rest("GET", "products/count.json")."""
+    url = f"https://{STORE}/admin/api/{API_VERSION}/{path.lstrip('/')}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        url, data=data, method=method.upper(),
+        headers={"Content-Type": "application/json",
+                 "X-Shopify-Access-Token": get_token(force=not _retry)},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 429) and _retry:
+            if e.code == 429:
+                time.sleep(2)
+            return rest(method, path, body, _retry=False)
+        raise SystemExit(f"Shopify API error {e.code}: {e.read().decode()[:500]}")
+
+
+def _is_mutation(query):
+    q = query.lstrip()
+    while q.startswith("#"):
+        q = q.split("\n", 1)[1].lstrip() if "\n" in q else ""
+    return q.startswith("mutation")
+
+
+def _main(argv):
+    write = "--write" in argv
+    argv = [a for a in argv if a != "--write"]
+    if not argv:
         sys.exit(__doc__)
-    if sys.argv[1] == "--check":
+    if argv[0] == "--check":
         res = graphql("{ shop { name myshopifyDomain } productsCount { count } }")
         shop = res["data"]["shop"]
         print(f"Connected: {shop['name']} ({shop['myshopifyDomain']}), "
               f"{res['data']['productsCount']['count']} products")
+        return
+    if argv[0] == "--scopes":
+        res = graphql("{ currentAppInstallation { accessScopes { handle } } }")
+        for s in res["data"]["currentAppInstallation"]["accessScopes"]:
+            print(s["handle"])
+        return
+    if argv[0] == "--rest":
+        if len(argv) < 3:
+            sys.exit("usage: --rest METHOD path [json-body]")
+        method, path = argv[1].upper(), argv[2]
+        if method != "GET" and not write:
+            sys.exit("Refusing REST write without --write (ask the owner first)")
+        body = json.loads(argv[3]) if len(argv) > 3 else None
+        print(json.dumps(rest(method, path, body), indent=2, ensure_ascii=False))
+        return
+    if argv[0] in ("-f", "--file"):
+        with open(argv[1]) as f:
+            query = f.read()
+        rest_args = argv[2:]
+    elif argv[0] == "-":
+        query = sys.stdin.read()
+        rest_args = argv[1:]
     else:
-        variables = json.loads(sys.argv[2]) if len(sys.argv) > 2 else None
-        print(json.dumps(graphql(sys.argv[1], variables), indent=2, ensure_ascii=False))
+        query = argv[0]
+        rest_args = argv[1:]
+    if _is_mutation(query) and not write:
+        sys.exit("Refusing mutation without --write (ask the owner first)")
+    variables = json.loads(rest_args[0]) if rest_args else None
+    print(json.dumps(graphql(query, variables), indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    _main(sys.argv[1:])
+
